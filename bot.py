@@ -2,17 +2,17 @@ import os
 import re
 import subprocess
 import tempfile
+import random
+import string
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CommandHandler
 
 # Replace with your actual bot token
 BOT_TOKEN = "7524183260:AAF-_yuvophw7q-DMxFStV5_aInKWhtdU1M"
 
-# Path to the pre-existing demo keystore
-DEMO_KEYSTORE_PATH = "/opt/render/project/src/demo_keystore.jks"  # Replace with your actual keystore file path on the server
-DEMO_KEY_ALIAS = "demoalias"  # The alias used in your keystore
-DEMO_KEY_PASSWORD = "demo_password"  # The password for the keystore
-DEMO_KEY_PASS = "demo_password"  # The password for the key inside the keystore
+# Function to generate a random password
+def generate_password(length=12):
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
 # Function to clean the filename
 def clean_filename(filename):
@@ -53,14 +53,31 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clean_name = clean_filename(filename)
     signed_apk_path = os.path.join(temp_dir, clean_name)
 
-    # Sign the APK using the demo keystore
-    apksigner_path = "/opt/render/project/src/android-sdk/build-tools/34.0.0/apksigner"  # Replace with the correct path
+    # Generate a temporary keystore
+    keystore_path = os.path.join(temp_dir, "tempkeystore.jks")
+    alias = "tempkey"
+    password = generate_password()
+
+    subprocess.run([
+        "keytool", "-genkey", "-v",
+        "-keystore", keystore_path,
+        "-alias", alias,
+        "-keyalg", "RSA",
+        "-keysize", "2048",
+        "-validity", "10000",
+        "-storepass", password,
+        "-keypass", password,
+        "-dname", "CN=Temp, OU=None, O=None, L=None, ST=None, C=US"
+    ], check=True)
+
+    # Sign the APK
+    apksigner_path = os.path.expanduser("~/android-sdk/build-tools/34.0.0/apksigner")
     subprocess.run([
         apksigner_path, "sign",
-        "--ks", DEMO_KEYSTORE_PATH,
-        "--ks-pass", f"pass:{DEMO_KEY_PASSWORD}",
-        "--key-pass", f"pass:{DEMO_KEY_PASS}",
-        "--ks-key-alias", DEMO_KEY_ALIAS,
+        "--ks", keystore_path,
+        "--ks-pass", f"pass:{password}",
+        "--key-pass", f"pass:{password}",
+        "--ks-key-alias", alias,
         "--out", signed_apk_path,
         apk_path
     ], check=True)
@@ -79,4 +96,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    main() 
