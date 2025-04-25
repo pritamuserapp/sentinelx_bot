@@ -1,8 +1,9 @@
 import os
+import re
+import subprocess
+import tempfile
 import random
 import string
-import firebase_admin
-from firebase_admin import credentials, firestore
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CommandHandler
 
@@ -10,105 +11,14 @@ from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTyp
 BOT_TOKEN = "7524183260:AAF-_yuvophw7q-DMxFStV5_aInKWhtdU1M"
 
 # Function to generate a random password
-def generate_password(length=6):
-    return ''.join(random.choices(string.digits, k=length))
+def generate_password(length=12):
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
-# Initialize Firebase with the service account file
-def init_firebase(service_account_file):
-    if os.path.exists(service_account_file):
-        cred = credentials.Certificate(service_account_file)
-        firebase_admin.initialize_app(cred)
-    else:
-        raise FileNotFoundError(f"Service key file '{service_account_file}' not found.")
-
-# Function to fetch password from Firebase
-async def fetch_password(user_key):
-    # Convert user_key to match the service key file format (RBL_1.json)
-    service_account_path = f"firebase_keys/{user_key.replace(' ', '_')}.json"
-    
-    # Initialize Firebase
-    try:
-        init_firebase(service_account_path)
-    except FileNotFoundError as e:
-        return str(e)
-
-    # Access the Firestore database
-    db = firestore.client()
-
-    # Fetch password from 'auth/admin_info/password' path
-    try:
-        doc_ref = db.collection('auth').document('admin_info')
-        doc = doc_ref.get()
-
-        if doc.exists:
-            password = doc.to_dict().get('password')
-            if password:
-                return f"{user_key}: {password}"
-            else:
-                return f"No password found for {user_key}."
-        else:
-            return f"Admin info document not found for {user_key}."
-
-    except Exception as e:
-        return f"Error accessing Firebase: {str(e)}"
-
-# Command handler for 'password' command
-async def password(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Expect user input like 'password RBL 1'
-    user_input = update.message.text.strip()
-    parts = user_input.split(' ')
-
-    if len(parts) < 2 or parts[0].lower() != 'password':
-        await update.message.reply_text("Please use the correct format: 'password <user_key>'.")
-        return
-
-    user_keys = parts[1].split(',')
-    response = []
-
-    for user_key in user_keys:
-        result = await fetch_password(user_key.strip())
-        response.append(result)
-
-    # Reply with the results
-    await update.message.reply_text('\n'.join(response))
-
-# Command handler for 'change password' command
-async def change_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_input = update.message.text.strip()
-    parts = user_input.split(' ')
-
-    if len(parts) < 2 or parts[0].lower() != 'change':
-        await update.message.reply_text("Please use the correct format: 'change password <user_key>'.")
-        return
-
-    user_keys = parts[2].split(',')
-    new_password = generate_password()  # Generate a new random password
-
-    # Process each user key and update the password
-    response = []
-
-    for user_key in user_keys:
-        service_account_path = f"firebase_keys/{user_key.strip().replace(' ', '_')}.json"
-        if os.path.exists(service_account_path):
-            try:
-                # Initialize Firebase with the correct service account file
-                init_firebase(service_account_path)
-
-                # Access Firestore and update password
-                db = firestore.client()
-                doc_ref = db.collection('auth').document('admin_info')
-                doc_ref.update({
-                    'password': new_password
-                })
-
-                response.append(f"Password for {user_key.strip()} has been changed to {new_password}.")
-            except Exception as e:
-                response.append(f"Error updating password for {user_key.strip()}: {str(e)}")
-        else:
-            response.append(f"Service key for {user_key.strip()} not found.")
-
-    # Reply with the results
-    await update.message.reply_text('\n'.join(response))
+# Function to clean the filename
+def clean_filename(filename):
+    name = filename.rsplit('.', 1)[0]  # Remove .apk
+    name = re.split(r'[-]', name)[0].strip()  # Keep text before dash
+    return f"{name}.apk"
 
 # Start command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -118,14 +28,70 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def say_hello(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Hello, world!")
 
+# Document handler
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.document:
+        return
+
+    doc = update.message.document
+    filename = doc.file_name
+
+    # Check if the file is an APK
+    if not filename.lower().endswith(".apk"):
+        await update.message.reply_text("Please send a valid APK file.")
+        return
+
+    await update.message.reply_text("Processing your APK...")
+
+    # Download the APK
+    file = await context.bot.get_file(doc.file_id)
+    temp_dir = tempfile.mkdtemp()
+    apk_path = os.path.join(temp_dir, filename)
+    await file.download_to_drive(custom_path=apk_path)
+
+    # Clean the filename
+    clean_name = clean_filename(filename)
+    signed_apk_path = os.path.join(temp_dir, clean_name)
+
+    # Generate a temporary keystore
+    keystore_path = os.path.join(temp_dir, "tempkeystore.jks")
+    alias = "tempkey"
+    password = generate_password()
+
+    subprocess.run([
+        "keytool", "-genkey", "-v",
+        "-keystore", keystore_path,
+        "-alias", alias,
+        "-keyalg", "RSA",
+        "-keysize", "2048",
+        "-validity", "10000",
+        "-storepass", password,
+        "-keypass", password,
+        "-dname", "CN=Temp, OU=None, O=None, L=None, ST=None, C=US"
+    ], check=True)
+
+    # Sign the APK
+    apksigner_path = os.path.expanduser("~/android-sdk/build-tools/34.0.0/apksigner")
+    subprocess.run([
+        apksigner_path, "sign",
+        "--ks", keystore_path,
+        "--ks-pass", f"pass:{password}",
+        "--key-pass", f"pass:{password}",
+        "--ks-key-alias", alias,
+        "--out", signed_apk_path,
+        apk_path
+    ], check=True)
+
+    # Send back the signed APK
+    await update.message.reply_document(document=open(signed_apk_path, "rb"), filename=clean_name)
+
 # Main function to start the bot
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("password", password))  # For password command
-    app.add_handler(CommandHandler("change", change_password))  # For change password command
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("(?i)^hello$"), say_hello))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
     app.run_polling()
 
