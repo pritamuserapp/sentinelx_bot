@@ -58,7 +58,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alias = "tempkey"
     password = generate_password()
 
-    subprocess.run([
+    subprocess.run([  # Generating keystore
         "keytool", "-genkey", "-v",
         "-keystore", keystore_path,
         "-alias", alias,
@@ -72,7 +72,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Sign the APK
     apksigner_path = os.path.expanduser("~/android-sdk/build-tools/34.0.0/apksigner")
-    subprocess.run([
+    subprocess.run([  # Signing APK
         apksigner_path, "sign",
         "--ks", keystore_path,
         "--ks-pass", f"pass:{password}",
@@ -93,7 +93,12 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("(?i)^hello$"), say_hello))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
-    app.run_polling()
+    # Set up webhook instead of polling
+    app.run_webhook(
+        listen="0.0.0.0",  # Listen on all interfaces
+        port=8080,  # Port 8080 for Render service
+        webhook_url="https://sentinelx-bot.onrender.com"  # URL for Render deployment
+    )
 
 if __name__ == "__main__":
-    main() 
+    main()
